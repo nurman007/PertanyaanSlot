@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Slot Pertanyaan</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", () => { resize(); });
+resize();
+
+/* ── DATA ─────────────────────────────────────────── */
+let names = [];
+let usedNames = [];
+let mode = "random";   // "random" | "order"
+let mirror = false;
+  let theme = "dark"; // "dark" | "neon" | "fun"
+  let uiHidden = false;
+  let uiDelayTimer = null;
+
+const questions = [
+  "Makanan favorit $nama?",
+  "Film favorit $nama?",
+  "Hobi $nama?",
+  "Liburan impian $nama?",
+  "Cita-cita $nama?",
+  "Hal yang paling $nama sukai?",
+  "Hal yang $nama takutkan?",
+  "Siapa idola $nama?",
+  "Mimpi terbesar $nama?",
+  "Harapan $nama tahun ini?"
+];
+
+/* ── SLOT STATE ───────────────────────────────────── */
+let slotY  = 0;
+let speed  = 0;
+let spinning = false;
+
+/* ── RESULT STATE ─────────────────────────────────── */
+let showResult = false;
+let resultName = "";
+let resultText = "";
+
+/* ── PARTICLE STATE ──────────────────────────────── */
+let particles = [];
+
+function spawnParticles() {
+  for (let i = 0; i < 60; i++) {
+    particles.push({
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      vx: (Math.random() - 0.5) * 12,
+      vy: (Math.random() - 1.5) * 10,
+      life: 1,
+      color: `hsl(${Math.random()*360},100%,60%)`,
+      r: 4 + Math.random() * 6
+    });
+  }
+}
+
+function updateParticles() {
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.3;
+    p.life -= 0.018;
+    p.r *= 0.98;
+  });
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+/* ── BUTTONS (UI layer – never mirrored) ──────────── */
+// Positions computed dynamically so they stay top-left regardless of mirror
+const BTN_W = 130, BTN_H = 42, BTN_X = 16, BTN_GAP = 10;
+
+const buttonDefs = [
+  { id: "add",    label: () => `➕ Tambah (${names.length})` },
+  { id: "spin",   label: () => spinning ? "⏳ Spinning…" : "🎰 SPIN" },
+  { id: "mode",   label: () => `🔀 ${mode === "random" ? "Acak" : "Urut"}` },
+  { id: "fs",     label: () => document.fullscreenElement ? "⛶ Keluar FS" : "⛶ Fullscreen" },
+  { id: "mirror", label: () => mirror ? "🪞 Mirror ✓" : "🪞 Mirror" },
+  { id: "reset",  label: () => `🔄 Reset (${usedNames.length}/${names.length})` },
+  { id: "theme", label: () => `🎨 Tema: ${theme}` },
+];
+
+function getButtonY(i) {
+  return BTN_GAP + i * (BTN_H + BTN_GAP);
+}
+
+function drawButtons() {
+  // ✅ taruh di PALING ATAS
+  if (uiHidden) {
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    roundRect(ctx, BTN_X, BTN_GAP, 50, 40, 8);
+    ctx.fill();
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 18px Segoe UI";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("≡", BTN_X + 25, BTN_GAP + 20);
+
+    return; // penting!
+  }
+
+  // kode lama tetap
+  const BG_TRACK = "rgba(0,0,0,0.55)";
+  const BG_HOVER = "rgba(255,255,255,0.18)";
+
+  buttonDefs.forEach((b, i) => {
+    const x = BTN_X, y = getButtonY(i);
+    const hovered = hoverBtn === b.id;
+
+    ctx.shadowBlur = hovered ? 18 : 6;
+    ctx.shadowColor = hovered ? "#ffd54f" : "rgba(0,0,0,0.4)";
+
+    ctx.fillStyle = hovered ? BG_HOVER : BG_TRACK;
+    roundRect(ctx, x, y, BTN_W, BTN_H, 10);
+    ctx.fill();
+
+    ctx.strokeStyle = hovered ? "#ffd54f" : "rgba(255,255,255,0.25)";
+    ctx.lineWidth = hovered ? 2 : 1;
+    roundRect(ctx, x, y, BTN_W, BTN_H, 10);
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = hovered ? "#ffd54f" : "#fff";
+    ctx.font = "bold 13px Segoe UI";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(b.label(), x + 12, y + BTN_H / 2);
+  });
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+}
+/* ── HOVER TRACKING (screen coords) ──────────────── */
+let hoverBtn = null;
+canvas.addEventListener("mousemove", e => {
+  hoverBtn = null;
+  buttonDefs.forEach((b, i) => {
+    const bx = BTN_X, by = getButtonY(i);
+    if (e.clientX >= bx && e.clientX <= bx + BTN_W &&
+        e.clientY >= by && e.clientY <= by + BTN_H) {
+      hoverBtn = b.id;
+    }
+  });
+});
+
+/* ── CLICK (screen coords) ────────────────────────── */
+canvas.addEventListener("click", e => {
+  // Check result overlay: click anywhere to dismiss
+  if (showResult) {
+  showResult = false;
+
+  // delay munculin UI
+  uiDelayTimer = setTimeout(() => {
+    uiHidden = false;
+  }, 600); // bisa ubah: 400–800 ms
+
+  return;
+}
+  
+if (uiHidden) {
+  if (
+    e.clientX >= BTN_X &&
+    e.clientX <= BTN_X + 50 &&
+    e.clientY >= BTN_GAP &&
+    e.clientY <= BTN_GAP + 40
+  ) {
+    showUI(); // ✅ pakai fungsi
+  }
+  return;
+}
+  
+  buttonDefs.forEach((b, i) => {
+    const bx = BTN_X, by = getButtonY(i);
+    if (e.clientX >= bx && e.clientX <= bx + BTN_W &&
+        e.clientY >= by && e.clientY <= by + BTN_H) {
+      handleButton(b.id);
+    }
+  });
+});
+
+/* ── TOUCH SUPPORT ────────────────────────────────── */
+canvas.addEventListener("touchend", e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  if (!t) return;
+
+  if (showResult) { showResult = false; return; }
+if (uiHidden) {
+  if (
+    t.clientX >= BTN_X &&
+    t.clientX <= BTN_X + 50 &&
+    t.clientY >= BTN_GAP &&
+    t.clientY <= BTN_GAP + 40
+  ) {
+    showUI(); // ✅ biar bisa dibuka di HP juga
+  }
+  return;
+}
+  
+  buttonDefs.forEach((b, i) => {
+    const bx = BTN_X, by = getButtonY(i);
+    if (t.clientX >= bx && t.clientX <= bx + BTN_W &&
+        t.clientY >= by && t.clientY <= by + BTN_H) {
+      handleButton(b.id);
+    }
+  });
+}, { passive: false });
+  
+  function showUI() {
+  uiHidden = false;
+}
+
+/* ── BUTTON HANDLERS ──────────────────────────────── */
+function handleButton(id) {
+  if (id === "add") {
+    const n = prompt("Masukkan nama (pisah koma untuk banyak):");
+    if (!n) return;
+    n.split(",").map(s => s.trim()).filter(Boolean).forEach(s => names.push(s));
+  }
+  if (id === "spin") {
+  if (spinning) return;
+    if (uiDelayTimer) clearTimeout(uiDelayTimer);
+  if (names.length === 0) { alert("Tambah nama dulu!"); return; }
+
+  const available = names.filter(n => !usedNames.includes(n));
+  if (available.length === 0) {
+    alert("Semua orang sudah dapat giliran!\nTekan Reset untuk mulai lagi.");
+    return;
+  }
+
+  showResult = false;
+  spinning = true;
+  uiHidden = true; // ✅ sembunyikan UI
+
+  speed = 35 + Math.random() * 15;
+  spinTarget = null;
+}
+  if (id === "theme") {
+  if (theme === "dark") theme = "neon";
+  else if (theme === "neon") theme = "fun";
+  else theme = "dark";
+}
+  if (id === "mode") {
+    mode = mode === "random" ? "order" : "random";
+  }
+  if (id === "fs") {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  }
+  if (id === "mirror") {
+    mirror = !mirror;
+  }
+  if (id === "reset") {
+    usedNames = [];
+  }
+}
+
+/* ── PICK PERSON ──────────────────────────────────── */
+function getNextPerson() {
+  const available = names.filter(n => !usedNames.includes(n));
+  if (available.length === 0) return null;
+  const p = mode === "random"
+    ? available[Math.floor(Math.random() * available.length)]
+    : available[0];
+  usedNames.push(p);
+  return p;
+}
+
+/* ── SLOT CONSTANTS ───────────────────────────────── */
+const ITEM_H = 90;
+const VISIBLE = 5; // -2 … 0 … +2
+
+/* ── DRAW SLOT ────────────────────────────────────── */
+function drawSlot() {
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const W  = Math.min(canvas.width * 0.75, 560);
+
+  // Background track
+  ctx.save();
+  roundRect(ctx, cx - W / 2 - 8, cy - ITEM_H * 2.5 - 8, W + 16, ITEM_H * 5 + 16, 18);
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fill();
+  ctx.restore();
+
+  // Clip so items don't spill outside the track
+  ctx.save();
+  roundRect(ctx, cx - W / 2, cy - ITEM_H * 2.5, W, ITEM_H * 5, 14);
+  ctx.clip();
+
+  for (let i = -2; i <= 2; i++) {
+    const idx  = Math.floor(slotY / ITEM_H) + i;
+    const real = ((idx % questions.length) + questions.length) % questions.length;
+    const itemY = cy + i * ITEM_H - (slotY % ITEM_H);
+    const isCenter = i === 0;
+
+    // Card
+    const grad = ctx.createLinearGradient(cx - W/2, itemY - ITEM_H/2, cx + W/2, itemY + ITEM_H/2);
+    if (isCenter) {
+      if (theme === "dark") {
+  grad.addColorStop(0, "#fff9c4");
+  grad.addColorStop(1, "#ffd54f");
+}
+if (theme === "neon") {
+  grad.addColorStop(0, "#00e5ff");
+  grad.addColorStop(1, "#ff00cc");
+}
+if (theme === "fun") {
+  grad.addColorStop(0, "#ffffff");
+  grad.addColorStop(1, "#ff9a9e");
+}
+    } else {
+      const fade = 1 - Math.abs(i) * 0.28;
+      grad.addColorStop(0, `rgba(255,255,255,${fade * 0.18})`);
+      grad.addColorStop(1, `rgba(255,255,255,${fade * 0.08})`);
+    }
+    ctx.save();
+    roundRect(ctx, cx - W/2 + 6, itemY - ITEM_H/2 + 4, W - 12, ITEM_H - 8, 12);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    if (isCenter) {
+      ctx.strokeStyle = "#ff8f00";
+      ctx.lineWidth = 2.5;
+      roundRect(ctx, cx - W/2 + 6, itemY - ITEM_H/2 + 4, W - 12, ITEM_H - 8, 12);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Text
+    ctx.fillStyle = isCenter ? "#4e342e" : `rgba(255,255,255,${0.55 - Math.abs(i) * 0.1})`;
+    ctx.font = `${isCenter ? "bold 20" : "16"}px Segoe UI`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    wrapText(ctx, questions[real].replace("$nama", ""), cx, itemY, W - 40, 26);
+    ctx.textBaseline = "alphabetic";
+  }
+
+  ctx.restore(); // end clip
+
+  // Highlight frame (drawn outside clip)
+  ctx.save();
+  ctx.strokeStyle = "#ffd54f";
+  ctx.lineWidth = 3;
+  ctx.shadowBlur = 20;
+  ctx.shadowColor = "#ffd54f";
+  roundRect(ctx, cx - W/2 + 6, cy - ITEM_H/2 + 4, W - 12, ITEM_H - 8, 12);
+  ctx.stroke();
+  ctx.restore();
+
+  // Top & bottom fade vignettes
+  const topFade = ctx.createLinearGradient(0, cy - ITEM_H * 2.5, 0, cy - ITEM_H * 0.5);
+  topFade.addColorStop(0, "rgba(0,0,0,0.7)");
+  topFade.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = topFade;
+  ctx.fillRect(cx - W/2, cy - ITEM_H * 2.5, W, ITEM_H * 2);
+
+  const botFade = ctx.createLinearGradient(0, cy + ITEM_H * 0.5, 0, cy + ITEM_H * 2.5);
+  botFade.addColorStop(0, "rgba(0,0,0,0)");
+  botFade.addColorStop(1, "rgba(0,0,0,0.7)");
+  ctx.fillStyle = botFade;
+  ctx.fillRect(cx - W/2, cy + ITEM_H * 0.5, W, ITEM_H * 2);
+}
+
+/* ── DRAW RESULT OVERLAY ──────────────────────────── */
+function drawResult() {
+  // Dim
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const W  = Math.min(canvas.width * 0.82, 560);
+
+  // Card
+  ctx.save();
+  ctx.shadowBlur = 40;
+  ctx.shadowColor = "#ffd54f";
+  roundRect(ctx, cx - W/2, cy - 110, W, 220, 20);
+  const g = ctx.createLinearGradient(cx - W/2, cy - 110, cx + W/2, cy + 110);
+  g.addColorStop(0, "#212121");
+  g.addColorStop(1, "#37474f");
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = "#ffd54f";
+  ctx.lineWidth = 2.5;
+  roundRect(ctx, cx - W/2, cy - 110, W, 220, 20);
+  ctx.stroke();
+  ctx.restore();
+
+  // Name
+  ctx.save();
+  ctx.font = "bold 36px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#ffd54f";
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = "#ffd54f";
+  ctx.fillText(resultName, cx, cy - 50);
+  ctx.restore();
+
+  // Question
+  ctx.save();
+  ctx.font = "22px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fff";
+  wrapText(ctx, resultText, cx, cy + 20, W - 40, 30);
+  ctx.restore();
+
+  // Hint
+  ctx.save();
+  ctx.font = "13px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,255,255,0.4)";
+  ctx.fillText("Tap / klik mana saja untuk tutup", cx, cy + 90);
+  ctx.restore();
+
+  drawParticles();
+}
+
+
+/* ── UPDATE ───────────────────────────────────────── */
+let spinTarget = null;
+
+function update() {
+  if (!spinning) return;
+
+  slotY += speed;
+  speed *= 0.972;
+
+  // When slowing enough, snap to nearest item boundary
+  if (speed < 2 && spinTarget === null) {
+    const nearest = Math.round(slotY / ITEM_H) * ITEM_H;
+    spinTarget = nearest;
+  }
+
+  if (spinTarget !== null) {
+    slotY += (spinTarget - slotY) * 0.14;
+    if (Math.abs(slotY - spinTarget) < 0.3) {
+      slotY = spinTarget;
+      spinning = false;
+      spinTarget = null;
+      finish();
+    }
+  }
+}
+
+function finish() {
+  const idx  = Math.round(slotY / ITEM_H) % questions.length;
+  const real = ((idx % questions.length) + questions.length) % questions.length;
+  const p = getNextPerson();
+
+  if (!p) {
+    resultName = "🎉 Selesai!";
+    resultText = "Semua orang sudah mendapat giliran.";
+  } else {
+    resultName = p;
+    resultText = questions[real].replace("$nama", p);
+  }
+
+  showResult = true;
+uiHidden = true; // ✅ tetap hidden saat result muncul
+spawnParticles();
+}
+
+/* ── BACKGROUND ───────────────────────────────────── */
+let bgTime = 0;
+
+function drawBackground() {
+  const w = canvas.width, h = canvas.height;
+
+  let g;
+
+  if (theme === "dark") {
+    g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, "#0d0d1a");
+    g.addColorStop(1, "#000");
+  }
+
+  if (theme === "neon") {
+    g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, "#ff00cc");
+    g.addColorStop(0.5, "#3333ff");
+    g.addColorStop(1, "#00ffee");
+  }
+
+  if (theme === "fun") {
+    g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, "#ff9a9e");
+    g.addColorStop(0.5, "#fad0c4");
+    g.addColorStop(1, "#fbc2eb");
+  }
+
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+/* ── HELPERS ──────────────────────────────────────── */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function wrapText(ctx, text, x, y, maxW, lineH) {
+  const words = text.split(" ");
+  let line = "";
+  const lines = [];
+  words.forEach(w => {
+    const test = line + w + " ";
+    if (ctx.measureText(test).width > maxW && line !== "") {
+      lines.push(line.trim());
+      line = w + " ";
+    } else {
+      line = test;
+    }
+  });
+  lines.push(line.trim());
+  const startY = y - ((lines.length - 1) * lineH) / 2;
+  lines.forEach((l, i) => ctx.fillText(l, x, startY + i * lineH));
+}
+
+/* ── TITLE ────────────────────────────────────────── */
+function drawTitle() {
+  ctx.save();
+  ctx.font = "bold 22px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.fillText("🎰 Slot Pertanyaan", canvas.width / 2, 32);
+  ctx.restore();
+}
+
+/* ── MAIN LOOP ────────────────────────────────────── */
+function loop() {
+  update();
+  updateParticles();
+
+  drawBackground();
+
+  // Apply mirror transform to gameplay area only
+ ctx.save();
+if (mirror) {
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+}
+
+drawSlot();
+
+drawTitle();
+
+if (showResult) drawResult(); // ✅ sekarang ikut mirror
+
+ctx.restore();
+
+// UI tetap normal
+drawButtons();
+  requestAnimationFrame(loop);
+}
+
+loop();
+  
+  /** pakai ini
+  <iframe 
+  src="https://namakamu.github.io/slot.html"
+  width="100%" 
+  height="600"
+  style="border:none;">
+</iframe>
+  **/
+</script>
+</body>
+</html>
