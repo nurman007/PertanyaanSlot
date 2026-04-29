@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Slot Pertanyaan</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<script>
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+/* ── DATA ─────────────────────────────────────────── */
+let names = [];
+let usedNames = [];
+let mode = "random";   // "random" | "order"
+let mirror = false;
+let theme = "dark";    // "dark" | "neon" | "fun"
+let uiHidden = false;
+let uiDelayTimer = null;
+
+const questions = [
+  "Makanan favorit $nama?",
+  "Film favorit $nama?",
+  "Hobi $nama?",
+  "Liburan impian $nama?",
+  "Cita-cita $nama?",
+  "Hal yang paling $nama sukai?",
+  "Hal yang $nama takutkan?",
+  "Siapa idola $nama?",
+  "Mimpi terbesar $nama?",
+  "Harapan $nama tahun ini?"
+];
+
+/* ── STATE GAME ───────────────────────────────────── */
+let slotY = 0;
+let speed = 0;
+let spinning = false;
+let spinTarget = null; // Dipindah ke atas agar rapi
+let showList = false;
+  
+let showResult = false;
+let resultName = "";
+let resultText = "";
+
+let particles = [];
+
+/* ── PARTIKEL ─────────────────────────────────────── */
+function spawnParticles() {
+  particles = []; // Reset partikel sebelumnya
+  for (let i = 0; i < 60; i++) {
+    particles.push({
+      x: canvas.width / 2,
+      y: canvas.height / 2,
+      vx: (Math.random() - 0.5) * 12,
+      vy: (Math.random() - 1.5) * 10,
+      life: 1,
+      color: `hsl(${Math.random() * 360},100%,60%)`,
+      r: 4 + Math.random() * 6
+    });
+  }
+}
+
+function updateParticles() {
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.3;
+    p.life -= 0.018;
+    p.r *= 0.98;
+  });
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+/* ── TOMBOL (UI layer – tidak pernah di-mirror) ───── */
+const BTN_W = 130, BTN_H = 42, BTN_X = 16, BTN_GAP = 10;
+let hoverBtn = null;
+
+const buttonDefs = [
+  { id: "hide",   label: () => "👁️ Sembunyikan" }, // Tambahkan baris ini
+  { id: "add",    label: () => `➕ Tambah (${names.length})` },
+  { id: "spin",   label: () => spinning ? "⏳ Spinning…" : "🎰 SPIN" },
+  { id: "mode",   label: () => `🔀 ${mode === "random" ? "Acak" : "Urut"}` },
+  { id: "fs",     label: () => document.fullscreenElement ? "⛶ Keluar FS" : "⛶ Fullscreen" },
+  { id: "mirror", label: () => mirror ? "🪞 Mirror ✓" : "🪞 Mirror" },
+  { id: "reset",  label: () => `🔄 Reset (${usedNames.length}/${names.length})` },
+  { id: "theme",  label: () => `🎨 Tema: ${theme}` },
+  { id: "list",   label: () => `📋 Daftar (${names.length})` },
+];
+
+function getButtonY(i) {
+  return BTN_GAP + i * (BTN_H + BTN_GAP);
+}
+
+function drawButtons() {
+  if (uiHidden) {
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    roundRect(ctx, BTN_X, BTN_GAP, 50, 40, 8);
+    ctx.fill();
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 18px Segoe UI";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("≡", BTN_X + 25, BTN_GAP + 20);
+    ctx.textBaseline = "alphabetic";
+    return;
+  }
+
+  const BG_TRACK = "rgba(0,0,0,0.55)";
+  const BG_HOVER = "rgba(255,255,255,0.18)";
+
+  buttonDefs.forEach((b, i) => {
+    const x = BTN_X, y = getButtonY(i);
+    const hovered = hoverBtn === b.id;
+
+    ctx.shadowBlur = hovered ? 18 : 6;
+    ctx.shadowColor = hovered ? "#ffd54f" : "rgba(0,0,0,0.4)";
+
+    ctx.fillStyle = hovered ? BG_HOVER : BG_TRACK;
+    roundRect(ctx, x, y, BTN_W, BTN_H, 10);
+    ctx.fill();
+
+    ctx.strokeStyle = hovered ? "#ffd54f" : "rgba(255,255,255,0.25)";
+    ctx.lineWidth = hovered ? 2 : 1;
+    roundRect(ctx, x, y, BTN_W, BTN_H, 10);
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = hovered ? "#ffd54f" : "#fff";
+    ctx.font = "bold 13px Segoe UI";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(b.label(), x + 12, y + BTN_H / 2);
+  });
+  ctx.textBaseline = "alphabetic";
+}
+
+/* ── EVENT LISTENER & INTERAKSI ───────────────────── */
+canvas.addEventListener("mousemove", e => {
+  hoverBtn = null;
+  if (uiHidden || showList || showResult) return;
+  buttonDefs.forEach((b, i) => {
+    const bx = BTN_X, by = getButtonY(i);
+    if (e.clientX >= bx && e.clientX <= bx + BTN_W &&
+        e.clientY >= by && e.clientY <= by + BTN_H) {
+      hoverBtn = b.id;
+    }
+  });
+});
+
+// Satukan logika klik dan touch menjadi satu fungsi tap
+function handleTap(x, y) {
+  // 1. Cek Overlay Daftar Nama
+  if (showList) {
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const W = Math.min(canvas.width * 0.8, 500);
+    const H = Math.min(canvas.height * 0.7, 500);
+
+    // Tombol Tutup
+    if (x >= cx + W/2 - 120 && x <= cx + W/2 && y >= cy - H/2 && y <= cy - H/2 + 50) {
+      showList = false;
+      return;
+    }
+        
+    names = names.filter(n => {
+      if (!n.y) return true;
+
+      // RESET (X: cx + W/2 - 100 s.d cx + W/2 - 60)
+      if (x >= cx + W/2 - 100 && x < cx + W/2 - 60 && y >= n.y - 20 && y <= n.y + 10) {
+        usedNames = usedNames.filter(u => u !== n.name);
+      }
+
+      // DELETE (X: cx + W/2 - 60 s.d cx + W/2 - 20)
+      if (x >= cx + W/2 - 60 && x <= cx + W/2 - 20 && y >= n.y - 20 && y <= n.y + 10) {
+        usedNames = usedNames.filter(u => u !== n.name);
+        return false; // Hapus dari names
+      }
+      return true;
+    });
+    return;
+  }
+
+  // 2. Cek Overlay Hasil
+  if (showResult) {
+    showResult = false;
+    uiDelayTimer = setTimeout(() => { uiHidden = false; }, 600);
+    return;
+  }
+    
+  // 3. Cek UI Hidden (Tombol Hamburger)
+  if (uiHidden) {
+    if (x >= BTN_X && x <= BTN_X + 50 && y >= BTN_GAP && y <= BTN_GAP + 40) {
+      uiHidden = false;
+    }
+    return;
+  }
+    
+  // 4. Cek Tombol Biasa
+  buttonDefs.forEach((b, i) => {
+    const bx = BTN_X, by = getButtonY(i);
+    if (x >= bx && x <= bx + BTN_W && y >= by && y <= by + BTN_H) {
+      handleButton(b.id);
+    }
+  });
+}
+
+canvas.addEventListener("click", e => handleTap(e.clientX, e.clientY));
+
+canvas.addEventListener("touchend", e => {
+  e.preventDefault(); // Mencegah double click (synthetic click) pada mobile
+  const t = e.changedTouches[0];
+  if (t) handleTap(t.clientX, t.clientY);
+}, { passive: false });
+
+
+/* ── LOGIKA TOMBOL ────────────────────────────────── */
+function handleButton(id) {
+  if (id === "hide") {
+    uiHidden = true; // Menyembunyikan UI saat tombol diklik
+  }
+  else if (id === "add") {
+    const n = prompt("Masukkan nama (pisah koma untuk banyak):");
+    if (!n) return;
+    n.split(",")
+     .map(s => s.trim())
+     .filter(Boolean)
+     .forEach(s => names.push({ name: s, y: 0 }));
+  }
+  else if (id === "spin") {
+// ... sisa kode di bawahnya biarkan sama persis ...
+    if (spinning) return;
+    if (uiDelayTimer) clearTimeout(uiDelayTimer);
+    if (names.length === 0) { alert("Tambah nama dulu!"); return; }
+
+    const available = names.filter(n => !usedNames.includes(n.name));
+    if (available.length === 0) {
+      alert("Semua orang sudah dapat giliran!\nTekan Reset untuk mulai lagi.");
+      return;
+    }
+
+    showResult = false;
+    spinning = true;
+    uiHidden = true;
+    speed = 35 + Math.random() * 15;
+    spinTarget = null;
+  }
+  else if (id === "theme") {
+    if (theme === "dark") theme = "neon";
+    else if (theme === "neon") theme = "fun";
+    else theme = "dark";
+  }
+  else if (id === "mode") {
+    mode = mode === "random" ? "order" : "random";
+  }
+  else if (id === "fs") {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+    else document.exitFullscreen();
+  }
+  else if (id === "mirror") {
+    mirror = !mirror;
+  }
+  else if (id === "reset") {
+    usedNames = [];
+  }
+  else if (id === "list") {
+    showList = !showList;
+    uiHidden = true;
+  }
+}
+
+/* ── PEMILIHAN NAMA ───────────────────────────────── */
+function getNextPerson() {
+  const available = names.filter(n => !usedNames.includes(n.name));
+  if (available.length === 0) return null;
+  const p = mode === "random"
+    ? available[Math.floor(Math.random() * available.length)]
+    : available[0];
+  usedNames.push(p.name);
+  return p.name;
+}
+
+/* ── KONSTANTA SLOT ───────────────────────────────── */
+const ITEM_H = 90;
+
+/* ── MENGGAMBAR SLOT ──────────────────────────────── */
+function drawSlot() {
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const W  = Math.min(canvas.width * 0.75, 560);
+
+  // Latar belakang jalurnya
+  ctx.save();
+  roundRect(ctx, cx - W / 2 - 8, cy - ITEM_H * 2.5 - 8, W + 16, ITEM_H * 5 + 16, 18);
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fill();
+  ctx.restore();
+
+  // Klip supaya teks tidak keluar area
+  ctx.save();
+  roundRect(ctx, cx - W / 2, cy - ITEM_H * 2.5, W, ITEM_H * 5, 14);
+  ctx.clip();
+
+  for (let i = -2; i <= 2; i++) {
+    const idx  = Math.floor(slotY / ITEM_H) + i;
+    const real = ((idx % questions.length) + questions.length) % questions.length;
+    const itemY = cy + i * ITEM_H - (slotY % ITEM_H);
+    const isCenter = i === 0;
+
+    // Kartu
+    const grad = ctx.createLinearGradient(cx - W/2, itemY - ITEM_H/2, cx + W/2, itemY + ITEM_H/2);
+    if (isCenter) {
+      if (theme === "dark") {
+        grad.addColorStop(0, "#fff9c4");
+        grad.addColorStop(1, "#ffd54f");
+      } else if (theme === "neon") {
+        grad.addColorStop(0, "#00e5ff");
+        grad.addColorStop(1, "#ff00cc");
+      } else if (theme === "fun") {
+        grad.addColorStop(0, "#ffffff");
+        grad.addColorStop(1, "#ff9a9e");
+      }
+    } else {
+      const fade = 1 - Math.abs(i) * 0.28;
+      grad.addColorStop(0, `rgba(255,255,255,${fade * 0.18})`);
+      grad.addColorStop(1, `rgba(255,255,255,${fade * 0.08})`);
+    }
+    
+    ctx.save();
+    roundRect(ctx, cx - W/2 + 6, itemY - ITEM_H/2 + 4, W - 12, ITEM_H - 8, 12);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    if (isCenter) {
+      ctx.strokeStyle = "#ff8f00";
+      ctx.lineWidth = 2.5;
+      roundRect(ctx, cx - W/2 + 6, itemY - ITEM_H/2 + 4, W - 12, ITEM_H - 8, 12);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Teks
+    ctx.fillStyle = isCenter ? "#4e342e" : `rgba(255,255,255,${0.55 - Math.abs(i) * 0.1})`;
+    ctx.font = `${isCenter ? "bold 20" : "16"}px Segoe UI`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    wrapText(ctx, questions[real].replace("$nama", ""), cx, itemY, W - 40, 26);
+  }
+
+  ctx.restore(); // akhiri klip
+
+  // Bingkai Sorotan (Tengah)
+  ctx.save();
+  ctx.strokeStyle = "#ffd54f";
+  ctx.lineWidth = 3;
+  ctx.shadowBlur = 20;
+  ctx.shadowColor = "#ffd54f";
+  roundRect(ctx, cx - W/2 + 6, cy - ITEM_H/2 + 4, W - 12, ITEM_H - 8, 12);
+  ctx.stroke();
+  ctx.restore();
+
+  // Efek Pudar Atas & Bawah
+  const topFade = ctx.createLinearGradient(0, cy - ITEM_H * 2.5, 0, cy - ITEM_H * 0.5);
+  topFade.addColorStop(0, "rgba(0,0,0,0.7)");
+  topFade.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = topFade;
+  ctx.fillRect(cx - W/2, cy - ITEM_H * 2.5, W, ITEM_H * 2);
+
+  const botFade = ctx.createLinearGradient(0, cy + ITEM_H * 0.5, 0, cy + ITEM_H * 2.5);
+  botFade.addColorStop(0, "rgba(0,0,0,0)");
+  botFade.addColorStop(1, "rgba(0,0,0,0.7)");
+  ctx.fillStyle = botFade;
+  ctx.fillRect(cx - W/2, cy + ITEM_H * 0.5, W, ITEM_H * 2);
+}
+  
+/* ── MENGGAMBAR DAFTAR NAMA ───────────────────────── */
+function drawList() {
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const W = Math.min(canvas.width * 0.8, 500);
+  const H = Math.min(canvas.height * 0.7, 500);
+
+  // Background
+  ctx.fillStyle = "rgba(0,0,0,0.85)";
+  roundRect(ctx, cx - W/2, cy - H/2, W, H, 20);
+  ctx.fill();
+
+  ctx.strokeStyle = "#ffd54f";
+  ctx.lineWidth = 2;
+  roundRect(ctx, cx - W/2, cy - H/2, W, H, 20);
+  ctx.stroke();
+  
+  ctx.fillStyle = "#fff";
+  ctx.font = "16px Segoe UI";
+  ctx.textAlign = "left";
+  ctx.fillText("❌ Tutup", cx + W/2 - 80, cy - H/2 + 30);
+
+  ctx.font = "bold 20px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.fillText("Daftar Nama", cx, cy - H/2 + 30);
+
+  ctx.textAlign = "left";
+  const startY = cy - H/2 + 70;
+  
+  // Hitung berapa nama yang muat ditampilkan agar tidak meluap
+  const maxItems = Math.floor((H - 100) / 40);
+  const displayNames = names.slice(0, maxItems);
+
+  displayNames.forEach((n, i) => {
+    const y = startY + i * 40;
+    ctx.fillStyle = usedNames.includes(n.name) ? "#888" : "#fff";
+    ctx.font = "16px Segoe UI";
+    ctx.fillText(n.name, cx - W/2 + 20, y);
+    n.y = y; // simpan koordinat Y untuk interaksi klik
+
+    // Tombol Reset & Hapus
+    ctx.fillText("🔄", cx + W/2 - 80, y);
+    ctx.fillText("❌", cx + W/2 - 40, y);
+  });
+
+  // Jika nama lebih banyak dari kapasitas kotak
+  if (names.length > maxItems) {
+    ctx.fillStyle = "#aaa";
+    ctx.fillText(`...dan ${names.length - maxItems} nama lainnya`, cx - W/2 + 20, startY + maxItems * 40);
+  }
+  ctx.textAlign = "center";
+}
+  
+/* ── MENGGAMBAR HASIL (OVERLAY) ───────────────────── */
+function drawResult() {
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  const W  = Math.min(canvas.width * 0.82, 560);
+
+  ctx.save();
+  ctx.shadowBlur = 40;
+  ctx.shadowColor = "#ffd54f";
+  roundRect(ctx, cx - W/2, cy - 110, W, 220, 20);
+  const g = ctx.createLinearGradient(cx - W/2, cy - 110, cx + W/2, cy + 110);
+  g.addColorStop(0, "#212121");
+  g.addColorStop(1, "#37474f");
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = "#ffd54f";
+  ctx.lineWidth = 2.5;
+  roundRect(ctx, cx - W/2, cy - 110, W, 220, 20);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.font = "bold 36px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#ffd54f";
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = "#ffd54f";
+  ctx.fillText(resultName, cx, cy - 50);
+  ctx.restore();
+
+  ctx.save();
+  ctx.font = "22px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fff";
+  wrapText(ctx, resultText, cx, cy + 20, W - 40, 30);
+  ctx.restore();
+
+  ctx.save();
+  ctx.font = "13px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,255,255,0.4)";
+  ctx.fillText("Tap / klik mana saja untuk tutup", cx, cy + 90);
+  ctx.restore();
+
+  drawParticles();
+}
+
+/* ── UPDATE LOGIC ─────────────────────────────────── */
+function update() {
+  if (!spinning) return;
+
+  slotY += speed;
+  speed *= 0.972;
+
+  if (speed < 2 && spinTarget === null) {
+    spinTarget = Math.round(slotY / ITEM_H) * ITEM_H;
+  }
+
+  if (spinTarget !== null) {
+    slotY += (spinTarget - slotY) * 0.14;
+    if (Math.abs(slotY - spinTarget) < 0.3) {
+      slotY = spinTarget;
+      spinning = false;
+      spinTarget = null;
+      finish();
+    }
+  }
+}
+
+function finish() {
+  const idx  = Math.round(slotY / ITEM_H) % questions.length;
+  const real = ((idx % questions.length) + questions.length) % questions.length;
+  const p = getNextPerson();
+
+  if (!p) {
+    resultName = "🎉 Selesai!";
+    resultText = "Semua orang sudah mendapat giliran.";
+  } else {
+    resultName = p;
+    resultText = questions[real].replace("$nama", p);
+  }
+
+  showResult = true;
+  uiHidden = true;
+  spawnParticles();
+}
+
+/* ── MENGGAMBAR BACKGROUND ────────────────────────── */
+function drawBackground() {
+  const w = canvas.width, h = canvas.height;
+  let g;
+
+  if (theme === "dark") {
+    g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, "#0d0d1a");
+    g.addColorStop(1, "#000");
+  } else if (theme === "neon") {
+    g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, "#ff00cc");
+    g.addColorStop(0.5, "#3333ff");
+    g.addColorStop(1, "#00ffee");
+  } else if (theme === "fun") {
+    g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, "#ff9a9e");
+    g.addColorStop(0.5, "#fad0c4");
+    g.addColorStop(1, "#fbc2eb");
+  }
+
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+/* ── FUNGSI PEMBANTU ──────────────────────────────── */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function wrapText(ctx, text, x, y, maxW, lineH) {
+  const words = text.split(" ");
+  let line = "";
+  const lines = [];
+  words.forEach(w => {
+    const test = line + w + " ";
+    if (ctx.measureText(test).width > maxW && line !== "") {
+      lines.push(line.trim());
+      line = w + " ";
+    } else {
+      line = test;
+    }
+  });
+  lines.push(line.trim());
+  const startY = y - ((lines.length - 1) * lineH) / 2;
+  lines.forEach((l, i) => ctx.fillText(l, x, startY + i * lineH));
+}
+
+/* ── MENGGAMBAR JUDUL ─────────────────────────────── */
+function drawTitle() {
+  ctx.save();
+  ctx.font = "bold 22px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.fillText("🎰 Slot Pertanyaan", canvas.width / 2, 32);
+  ctx.restore();
+}
+
+/* ── LOOP UTAMA ───────────────────────────────────── */
+function loop() {
+  update();
+  updateParticles();
+
+  drawBackground();
+
+  // Efek mirror hanya untuk area gameplay (Slot & Hasil)
+  ctx.save();
+  if (mirror) {
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+  }
+
+  drawSlot();
+  drawTitle();
+
+  if (showResult) drawResult();
+
+  ctx.restore();
+
+  // UI menu daftar dan tombol tetap normal (tidak terbalik)
+  if (showList) drawList();
+  drawButtons();
+
+  requestAnimationFrame(loop);
+}
+
+loop();
+
+/*
+  Pakai cara ini untuk embed jika dibutuhkan:
+  <iframe 
+    src="https://namakamu.github.io/slot.html"
+    width="100%" 
+    height="600"
+    style="border:none;">
+  </iframe>
+*/
+</script>
+</body>
+</html>
